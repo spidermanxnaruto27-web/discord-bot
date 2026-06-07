@@ -3,6 +3,8 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,6 +16,21 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 queue = []
+
+# ─── KEEP RENDER ALIVE ───
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+    def log_message(self, format, *args):
+        pass  # Silence logs
+
+def run_server():
+    server = HTTPServer(("0.0.0.0", 8080), Handler)
+    server.serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
 
 # ─── AUTO JOIN ON STARTUP ───
 @bot.event
@@ -38,7 +55,11 @@ async def on_voice_state_update(member, before, after):
 def play_next(ctx):
     if len(queue) > 0:
         url = queue.pop(0)
-        ydl_opts = {"format": "bestaudio", "quiet": True}
+        ydl_opts = {
+            "format": "bestaudio",
+            "quiet": True,
+            "cookiefile": "cookies.txt"
+        }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
             audio_url = info["url"]
@@ -100,7 +121,7 @@ async def skip(ctx):
     else:
         await ctx.send("❌ Nothing to skip.")
 
-# ─── !queue ───
+# ─── !showqueue ───
 @bot.command()
 async def showqueue(ctx):
     if not queue:
@@ -113,7 +134,9 @@ async def showqueue(ctx):
 @bot.command()
 async def volume(ctx, vol: int):
     if ctx.voice_client and ctx.voice_client.source:
-        ctx.voice_client.source = discord.PCMVolumeTransformer(ctx.voice_client.source, volume=vol/100)
+        ctx.voice_client.source = discord.PCMVolumeTransformer(
+            ctx.voice_client.source, volume=vol / 100
+        )
         await ctx.send(f"🔊 Volume set to **{vol}%**")
     else:
         await ctx.send("❌ Nothing is playing.")
@@ -148,6 +171,7 @@ async def show_commands(ctx):
 `!volume <0-100>` — Set volume
 `!join` — Join your voice channel
 `!leave` — Leave voice channel
+`!commands` — Show this list
     """
     await ctx.send(msg)
 

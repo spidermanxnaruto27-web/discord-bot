@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord import app_commands
 import yt_dlp
 import asyncio
 import os
@@ -13,8 +13,17 @@ VOICE_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID"))
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
 
+class MyBot(discord.Client):
+    def __init__(self):
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self):
+        await self.tree.sync()
+        print("✅ Slash commands synced")
+
+bot = MyBot()
 queue = []
 
 # ─── KEEP RENDER ALIVE ───
@@ -52,7 +61,7 @@ async def on_voice_state_update(member, before, after):
             print("🔁 Rejoined voice channel")
 
 # ─── PLAY NEXT SONG IN QUEUE ───
-def play_next(ctx):
+def play_next(interaction):
     if len(queue) > 0:
         url = queue.pop(0)
         ydl_opts = {
@@ -68,111 +77,120 @@ def play_next(ctx):
             audio_url,
             before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
         )
-        ctx.voice_client.play(source, after=lambda e: play_next(ctx))
+        interaction.guild.voice_client.play(
+            source, after=lambda e: play_next(interaction)
+        )
         asyncio.run_coroutine_threadsafe(
-            ctx.send(f"▶️ Now playing: **{title}**"), bot.loop
+            interaction.channel.send(f"▶️ Now playing: **{title}**"), bot.loop
         )
 
-# ─── !play ───
-@bot.command()
-async def play(ctx, *, url: str):
-    if not ctx.voice_client:
-        await ctx.send("❌ Bot is not in a voice channel.")
+# ─── /play ───
+@bot.tree.command(name="play", description="Play a YouTube song or add to queue")
+@app_commands.describe(url="YouTube video URL")
+async def play(interaction: discord.Interaction, url: str):
+    await interaction.response.defer()
+    if not interaction.guild.voice_client:
+        await interaction.followup.send("❌ Bot is not in a voice channel.")
         return
     queue.append(url)
-    if not ctx.voice_client.is_playing():
-        play_next(ctx)
-        await ctx.send("🎵 Starting playback...")
+    if not interaction.guild.voice_client.is_playing():
+        play_next(interaction)
+        await interaction.followup.send("🎵 Starting playback...")
     else:
-        await ctx.send(f"➕ Added to queue. Position: **{len(queue)}**")
+        await interaction.followup.send(f"➕ Added to queue. Position: **{len(queue)}**")
 
-# ─── !pause ───
-@bot.command()
-async def pause(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.pause()
-        await ctx.send("⏸️ Paused.")
+# ─── /pause ───
+@bot.tree.command(name="pause", description="Pause the current song")
+async def pause(interaction: discord.Interaction):
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
+        interaction.guild.voice_client.pause()
+        await interaction.response.send_message("⏸️ Paused.")
     else:
-        await ctx.send("❌ Nothing is playing.")
+        await interaction.response.send_message("❌ Nothing is playing.")
 
-# ─── !resume ───
-@bot.command()
-async def resume(ctx):
-    if ctx.voice_client and ctx.voice_client.is_paused():
-        ctx.voice_client.resume()
-        await ctx.send("▶️ Resumed.")
+# ─── /resume ───
+@bot.tree.command(name="resume", description="Resume the paused song")
+async def resume(interaction: discord.Interaction):
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
+        interaction.guild.voice_client.resume()
+        await interaction.response.send_message("▶️ Resumed.")
     else:
-        await ctx.send("❌ Nothing is paused.")
+        await interaction.response.send_message("❌ Nothing is paused.")
 
-# ─── !stop ───
-@bot.command()
-async def stop(ctx):
+# ─── /stop ───
+@bot.tree.command(name="stop", description="Stop music and clear queue")
+async def stop(interaction: discord.Interaction):
     queue.clear()
-    if ctx.voice_client:
-        ctx.voice_client.stop()
-        await ctx.send("⏹️ Stopped and queue cleared.")
-
-# ─── !skip ───
-@bot.command()
-async def skip(ctx):
-    if ctx.voice_client and ctx.voice_client.is_playing():
-        ctx.voice_client.stop()
-        await ctx.send("⏭️ Skipped.")
+    if interaction.guild.voice_client:
+        interaction.guild.voice_client.stop()
+        await interaction.response.send_message("⏹️ Stopped and queue cleared.")
     else:
-        await ctx.send("❌ Nothing to skip.")
+        await interaction.response.send_message("❌ Bot is not in a voice channel.")
 
-# ─── !showqueue ───
-@bot.command()
-async def showqueue(ctx):
+# ─── /skip ───
+@bot.tree.command(name="skip", description="Skip current song")
+async def skip(interaction: discord.Interaction):
+    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
+        interaction.guild.voice_client.stop()
+        await interaction.response.send_message("⏭️ Skipped.")
+    else:
+        await interaction.response.send_message("❌ Nothing to skip.")
+
+# ─── /queue ───
+@bot.tree.command(name="queue", description="Show current song queue")
+async def showqueue(interaction: discord.Interaction):
     if not queue:
-        await ctx.send("📭 Queue is empty.")
+        await interaction.response.send_message("📭 Queue is empty.")
     else:
         msg = "\n".join([f"{i+1}. {url}" for i, url in enumerate(queue)])
-        await ctx.send(f"📋 **Queue:**\n{msg}")
+        await interaction.response.send_message(f"📋 **Queue:**\n{msg}")
 
-# ─── !volume ───
-@bot.command()
-async def volume(ctx, vol: int):
-    if ctx.voice_client and ctx.voice_client.source:
-        ctx.voice_client.source = discord.PCMVolumeTransformer(
-            ctx.voice_client.source, volume=vol / 100
+# ─── /volume ───
+@bot.tree.command(name="volume", description="Set volume (0 to 100)")
+@app_commands.describe(level="Volume level between 0 and 100")
+async def volume(interaction: discord.Interaction, level: int):
+    if interaction.guild.voice_client and interaction.guild.voice_client.source:
+        interaction.guild.voice_client.source = discord.PCMVolumeTransformer(
+            interaction.guild.voice_client.source, volume=level / 100
         )
-        await ctx.send(f"🔊 Volume set to **{vol}%**")
+        await interaction.response.send_message(f"🔊 Volume set to **{level}%**")
     else:
-        await ctx.send("❌ Nothing is playing.")
+        await interaction.response.send_message("❌ Nothing is playing.")
 
-# ─── !join ───
-@bot.command()
-async def join(ctx):
-    if ctx.author.voice:
-        await ctx.author.voice.channel.connect()
-        await ctx.send("✅ Joined your voice channel.")
+# ─── /join ───
+@bot.tree.command(name="join", description="Bot joins your voice channel")
+async def join(interaction: discord.Interaction):
+    if interaction.user.voice:
+        await interaction.user.voice.channel.connect()
+        await interaction.response.send_message("✅ Joined your voice channel.")
     else:
-        await ctx.send("❌ You are not in a voice channel.")
+        await interaction.response.send_message("❌ You are not in a voice channel.")
 
-# ─── !leave ───
-@bot.command()
-async def leave(ctx):
-    if ctx.voice_client:
-        await ctx.voice_client.disconnect()
-        await ctx.send("👋 Left the voice channel.")
+# ─── /leave ───
+@bot.tree.command(name="leave", description="Bot leaves the voice channel")
+async def leave(interaction: discord.Interaction):
+    if interaction.guild.voice_client:
+        await interaction.guild.voice_client.disconnect()
+        await interaction.response.send_message("👋 Left the voice channel.")
+    else:
+        await interaction.response.send_message("❌ Bot is not in a voice channel.")
 
-# ─── !commands ───
-@bot.command(name="commands")
-async def show_commands(ctx):
+# ─── /commands ───
+@bot.tree.command(name="commands", description="Show all bot commands")
+async def show_commands(interaction: discord.Interaction):
     msg = """
 🤖 **Bot Commands:**
-`!play <youtube_url>` — Play or add to queue
-`!pause` — Pause current song
-`!resume` — Resume paused song
-`!skip` — Skip current song
-`!stop` — Stop and clear queue
-`!showqueue` — Show current queue
-`!volume <0-100>` — Set volume
-`!join` — Join your voice channel
-`!leave` — Leave voice channel
-`!commands` — Show this list
+`/play <url>` — Play YouTube song or add to queue
+`/pause` — Pause current song
+`/resume` — Resume paused song
+`/skip` — Skip current song
+`/stop` — Stop and clear queue
+`/queue` — Show current queue
+`/volume <0-100>` — Set volume
+`/join` — Join your voice channel
+`/leave` — Leave voice channel
+`/commands` — Show this list
     """
-    await ctx.send(msg)
+    await interaction.response.send_message(msg)
 
 bot.run(TOKEN)

@@ -3,8 +3,6 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,21 +14,6 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 queue = []
-
-# ─── KEEP RENDER ALIVE ───
-class Handler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Bot is running!")
-    def log_message(self, format, *args):
-        pass  # Silence logs
-
-def run_server():
-    server = HTTPServer(("0.0.0.0", 8080), Handler)
-    server.serve_forever()
-
-threading.Thread(target=run_server, daemon=True).start()
 
 # ─── AUTO JOIN ON STARTUP ───
 @bot.event

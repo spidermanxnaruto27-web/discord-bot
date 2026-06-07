@@ -3,6 +3,8 @@ from discord.ext import commands
 import yt_dlp
 import asyncio
 import os
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,6 +16,21 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 queue = []
+
+# ─── KEEP RENDER ALIVE ───
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is running!")
+    def log_message(self, format, *args):
+        pass
+
+def run_server():
+    server = HTTPServer(("0.0.0.0", 10000), Handler)
+    server.serve_forever()
+
+threading.Thread(target=run_server, daemon=True).start()
 
 # ─── AUTO JOIN ON STARTUP ───
 @bot.event
@@ -65,7 +82,7 @@ async def play(ctx, *, url: str):
     queue.append(url)
     if not ctx.voice_client.is_playing():
         play_next(ctx)
-        await ctx.send(f"🎵 Starting playback...")
+        await ctx.send("🎵 Starting playback...")
     else:
         await ctx.send(f"➕ Added to queue. Position: **{len(queue)}**")
 

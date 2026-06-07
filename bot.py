@@ -11,8 +11,8 @@ load_dotenv()
 TOKEN = os.getenv("TOKEN")
 VOICE_CHANNEL_ID = int(os.getenv("VOICE_CHANNEL_ID"))
 
-intents = discord.Intents.default()
-intents.message_content = True
+# ─── FIXED INTENTS ───
+intents = discord.Intents.all()
 
 class MyBot(discord.Client):
     def __init__(self):
@@ -149,10 +149,16 @@ def play_next(guild, channel):
 @bot.event
 async def on_ready():
     print(f"✅ Logged in as {bot.user}")
+    await asyncio.sleep(3)  # wait for cache to load
     channel = bot.get_channel(VOICE_CHANNEL_ID)
     if channel:
-        await channel.connect()
-        print(f"✅ Joined voice channel: {channel.name}")
+        try:
+            await channel.connect()
+            print(f"✅ Joined voice channel: {channel.name}")
+        except Exception as e:
+            print(f"❌ Could not join: {e}")
+    else:
+        print(f"❌ Channel not found! Check VOICE_CHANNEL_ID")
 
 # ─── AUTO REJOIN IF KICKED ───
 @bot.event

@@ -25,6 +25,7 @@ class MyBot(discord.Client):
 
 bot = MyBot()
 queue = []
+current_song = {"title": None, "url": None}
 
 # ─── KEEP RENDER ALIVE ───
 class Handler(BaseHTTPRequestHandler):
@@ -40,6 +41,109 @@ def run_server():
     server.serve_forever()
 
 threading.Thread(target=run_server, daemon=True).start()
+
+# ─── NOW PLAYING EMBED + BUTTONS ───
+class MusicButtons(discord.ui.View):
+    def __init__(self, guild):
+        super().__init__(timeout=None)
+        self.guild = guild
+
+    @discord.ui.button(label="⏸ Pause", style=discord.ButtonStyle.primary)
+    async def pause(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self.guild.voice_client
+        if vc and vc.is_playing():
+            vc.pause()
+            button.label = "▶️ Resume"
+            button.style = discord.ButtonStyle.success
+            await interaction.response.edit_message(view=self)
+        elif vc and vc.is_paused():
+            vc.resume()
+            button.label = "⏸ Pause"
+            button.style = discord.ButtonStyle.primary
+            await interaction.response.edit_message(view=self)
+        else:
+            await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+
+    @discord.ui.button(label="⏭ Skip", style=discord.ButtonStyle.secondary)
+    async def skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self.guild.voice_client
+        if vc and vc.is_playing():
+            vc.stop()
+            await interaction.response.send_message("⏭️ Skipped.", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Nothing to skip.", ephemeral=True)
+
+    @discord.ui.button(label="⏹ Stop", style=discord.ButtonStyle.danger)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self.guild.voice_client
+        queue.clear()
+        if vc:
+            vc.stop()
+        await interaction.response.send_message("⏹️ Stopped and queue cleared.", ephemeral=True)
+
+    @discord.ui.button(label="📋 Queue", style=discord.ButtonStyle.secondary)
+    async def show_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not queue:
+            await interaction.response.send_message("📭 Queue is empty.", ephemeral=True)
+        else:
+            msg = "\n".join([f"{i+1}. {url}" for i, url in enumerate(queue)])
+            await interaction.response.send_message(f"📋 **Queue:**\n{msg}", ephemeral=True)
+
+    @discord.ui.button(label="🔊 Vol +10", style=discord.ButtonStyle.secondary)
+    async def vol_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+        vc = self.guild.voice_client
+        if vc and vc.source:
+            vc.source = discord.PCMVolumeTransformer(vc.source)
+            current = getattr(vc.source, 'volume', 0.8)
+            new_vol = min(current + 0.1, 1.0)
+            vc.source.volume = new_vol
+            await interaction.response.send_message(f"🔊 Volume: **{int(new_vol*100)}%**", ephemeral=True)
+        else:
+            await interaction.response.send_message("❌ Nothing is playing.", ephemeral=True)
+
+# ─── NOW PLAYING EMBED ───
+def now_playing_embed(title, url):
+    embed = discord.Embed(
+        title="🎵 Now Playing",
+        description=f"**[{title}]({url})**",
+        color=0x9B59B6
+    )
+    embed.add_field(name="Source", value="YouTube", inline=True)
+    embed.add_field(name="Volume", value="80%", inline=True)
+    embed.add_field(name="Queue", value=f"{len(queue)} waiting", inline=True)
+    embed.set_footer(text="Use buttons below to control music")
+    return embed
+
+# ─── PLAY NEXT SONG ───
+def play_next(guild, channel):
+    if len(queue) > 0:
+        url = queue.pop(0)
+        ydl_opts = {
+            "format": "bestaudio",
+            "quiet": True,
+            "cookiefile": "cookies.txt"
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+            audio_url = info["url"]
+            title = info.get("title", "Unknown")
+
+        current_song["title"] = title
+        current_song["url"] = url
+
+        source = discord.FFmpegPCMAudio(
+            audio_url,
+            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+        )
+        guild.voice_client.play(
+            source, after=lambda e: play_next(guild, channel)
+        )
+
+        embed = now_playing_embed(title, url)
+        view = MusicButtons(guild)
+        asyncio.run_coroutine_threadsafe(
+            channel.send(embed=embed, view=view), bot.loop
+        )
 
 # ─── AUTO JOIN ON STARTUP ───
 @bot.event
@@ -60,30 +164,6 @@ async def on_voice_state_update(member, before, after):
             await channel.connect()
             print("🔁 Rejoined voice channel")
 
-# ─── PLAY NEXT SONG IN QUEUE ───
-def play_next(interaction):
-    if len(queue) > 0:
-        url = queue.pop(0)
-        ydl_opts = {
-            "format": "bestaudio",
-            "quiet": True,
-            "cookiefile": "cookies.txt"
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            audio_url = info["url"]
-            title = info.get("title", "Unknown")
-        source = discord.FFmpegPCMAudio(
-            audio_url,
-            before_options="-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
-        )
-        interaction.guild.voice_client.play(
-            source, after=lambda e: play_next(interaction)
-        )
-        asyncio.run_coroutine_threadsafe(
-            interaction.channel.send(f"▶️ Now playing: **{title}**"), bot.loop
-        )
-
 # ─── /play ───
 @bot.tree.command(name="play", description="Play a YouTube song or add to queue")
 @app_commands.describe(url="YouTube video URL")
@@ -94,68 +174,10 @@ async def play(interaction: discord.Interaction, url: str):
         return
     queue.append(url)
     if not interaction.guild.voice_client.is_playing():
-        play_next(interaction)
-        await interaction.followup.send("🎵 Starting playback...")
+        play_next(interaction.guild, interaction.channel)
+        await interaction.followup.send("🎵 Loading song...")
     else:
-        await interaction.followup.send(f"➕ Added to queue. Position: **{len(queue)}**")
-
-# ─── /pause ───
-@bot.tree.command(name="pause", description="Pause the current song")
-async def pause(interaction: discord.Interaction):
-    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
-        interaction.guild.voice_client.pause()
-        await interaction.response.send_message("⏸️ Paused.")
-    else:
-        await interaction.response.send_message("❌ Nothing is playing.")
-
-# ─── /resume ───
-@bot.tree.command(name="resume", description="Resume the paused song")
-async def resume(interaction: discord.Interaction):
-    if interaction.guild.voice_client and interaction.guild.voice_client.is_paused():
-        interaction.guild.voice_client.resume()
-        await interaction.response.send_message("▶️ Resumed.")
-    else:
-        await interaction.response.send_message("❌ Nothing is paused.")
-
-# ─── /stop ───
-@bot.tree.command(name="stop", description="Stop music and clear queue")
-async def stop(interaction: discord.Interaction):
-    queue.clear()
-    if interaction.guild.voice_client:
-        interaction.guild.voice_client.stop()
-        await interaction.response.send_message("⏹️ Stopped and queue cleared.")
-    else:
-        await interaction.response.send_message("❌ Bot is not in a voice channel.")
-
-# ─── /skip ───
-@bot.tree.command(name="skip", description="Skip current song")
-async def skip(interaction: discord.Interaction):
-    if interaction.guild.voice_client and interaction.guild.voice_client.is_playing():
-        interaction.guild.voice_client.stop()
-        await interaction.response.send_message("⏭️ Skipped.")
-    else:
-        await interaction.response.send_message("❌ Nothing to skip.")
-
-# ─── /queue ───
-@bot.tree.command(name="queue", description="Show current song queue")
-async def showqueue(interaction: discord.Interaction):
-    if not queue:
-        await interaction.response.send_message("📭 Queue is empty.")
-    else:
-        msg = "\n".join([f"{i+1}. {url}" for i, url in enumerate(queue)])
-        await interaction.response.send_message(f"📋 **Queue:**\n{msg}")
-
-# ─── /volume ───
-@bot.tree.command(name="volume", description="Set volume (0 to 100)")
-@app_commands.describe(level="Volume level between 0 and 100")
-async def volume(interaction: discord.Interaction, level: int):
-    if interaction.guild.voice_client and interaction.guild.voice_client.source:
-        interaction.guild.voice_client.source = discord.PCMVolumeTransformer(
-            interaction.guild.voice_client.source, volume=level / 100
-        )
-        await interaction.response.send_message(f"🔊 Volume set to **{level}%**")
-    else:
-        await interaction.response.send_message("❌ Nothing is playing.")
+        await interaction.followup.send(f"➕ Added to queue! Position: **{len(queue)}**")
 
 # ─── /join ───
 @bot.tree.command(name="join", description="Bot joins your voice channel")
@@ -175,21 +197,35 @@ async def leave(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Bot is not in a voice channel.")
 
+# ─── /volume ───
+@bot.tree.command(name="volume", description="Set volume 0 to 100")
+@app_commands.describe(level="Volume level between 0 and 100")
+async def volume(interaction: discord.Interaction, level: int):
+    if interaction.guild.voice_client and interaction.guild.voice_client.source:
+        interaction.guild.voice_client.source = discord.PCMVolumeTransformer(
+            interaction.guild.voice_client.source, volume=level / 100
+        )
+        await interaction.response.send_message(f"🔊 Volume set to **{level}%**")
+    else:
+        await interaction.response.send_message("❌ Nothing is playing.")
+
 # ─── /commands ───
 @bot.tree.command(name="commands", description="Show all bot commands")
 async def show_commands(interaction: discord.Interaction):
     msg = """
 🤖 **Bot Commands:**
 `/play <url>` — Play YouTube song or add to queue
-`/pause` — Pause current song
-`/resume` — Resume paused song
-`/skip` — Skip current song
-`/stop` — Stop and clear queue
-`/queue` — Show current queue
-`/volume <0-100>` — Set volume
 `/join` — Join your voice channel
 `/leave` — Leave voice channel
+`/volume <0-100>` — Set volume
 `/commands` — Show this list
+
+🎮 **Player Buttons:**
+`⏸ Pause` — Pause or resume song
+`⏭ Skip` — Skip current song
+`⏹ Stop` — Stop and clear queue
+`📋 Queue` — Show queue
+`🔊 Vol +10` — Increase volume
     """
     await interaction.response.send_message(msg)
 
